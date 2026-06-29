@@ -17,7 +17,13 @@ router = APIRouter()
 
 # Load Whisper once at import time
 print(f"Loading Whisper model ({WHISPER_MODEL})...")
-_whisper = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="float32")
+_whisper = None
+
+def get_whisper():
+    global _whisper
+    if _whisper is None:
+        _whisper = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="float32")
+    return _whisper
 print("✅ Whisper ready")
 
 
@@ -32,12 +38,12 @@ async def _text_to_speech(text: str) -> bytes:
 
 
 def _speech_to_text(audio_bytes: bytes) -> str:
-    """Transcribe audio bytes using faster-whisper."""
+    whisper = get_whisper()
     with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
         f.write(audio_bytes)
         tmp_path = f.name
     try:
-        segments, _ = _whisper.transcribe(tmp_path, language="ar")
+        segments, _ = whisper.transcribe(tmp_path, language="ar")
         return " ".join(seg.text for seg in segments).strip()
     finally:
         os.unlink(tmp_path)
