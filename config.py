@@ -1,7 +1,11 @@
 import os
 from dotenv import load_dotenv
 load_dotenv()
+EMBED_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
+TOP_K = 7
+
+MIN_SIMILARITY = 0.35
 GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
 HF_TOKEN: str = os.getenv("HF_TOKEN", "")
 
