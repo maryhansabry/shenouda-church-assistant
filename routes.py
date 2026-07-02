@@ -4,147 +4,292 @@ import base64
 import asyncio
 import tempfile
 import os
+import traceback
+
 from fastapi import APIRouter, HTTPException, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
-import edge_tts
+from pydantic import BaseModel
+
 from faster_whisper import WhisperModel
 
 from models import ChatRequest, ChatResponse, HealthResponse
-from config import TTS_VOICE, WHISPER_MODEL
+from config import WHISPER_MODEL, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
 import rag
 
 router = APIRouter()
 
-# Load Whisper once at import time
-print(f"Loading Whisper model ({WHISPER_MODEL})...")
+# =========================
+# Whisper
+# =========================
+
 _whisper = None
 
 def get_whisper():
     global _whisper
+
     if _whisper is None:
-        _whisper = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="float32")
+        print(f"Loading Whisper model ({WHISPER_MODEL})...")
+
+        _whisper = WhisperModel(
+            WHISPER_MODEL,
+            device="cpu",
+            compute_type="int8"
+        )
+
+        print("✅ Whisper loaded successfully")
+
     return _whisper
-print("✅ Whisper ready")
 
 
-async def _text_to_speech(text: str) -> bytes:
-    """Convert text to MP3 bytes using edge-tts."""
-    communicate = edge_tts.Communicate(text, TTS_VOICE)
-    audio_chunks = []
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            audio_chunks.append(chunk["data"])
-    return b"".join(audio_chunks)
+# =========================
+# TTS (ElevenLabs)
+# # =========================
+# from elevenlabs.client import ElevenLabs
+
+# _elevenlabs_client = None
+
+# def get_elevenlabs():
+#     global _elevenlabs_client
+
+#     if _elevenlabs_client is None:
+#         print("Initializing ElevenLabs client...")
+#         _elevenlabs_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+#         print("✅ ElevenLabs client ready")
+
+#     return _elevenlabs_client
 
 
+# def _text_to_speech_sync(text: str) -> bytes:
+#     try:
+#         print(f"TTS Request: {text[:100]}")
+
+#         client = get_elevenlabs()
+
+#         audio_stream = client.text_to_speech.convert(
+#             voice_id=ELEVENLABS_VOICE_ID,
+#             text=text,
+#             model_id="eleven_multilingual_v2",
+#             output_format="mp3_44100_128",
+#         )
+
+#         audio_data = b"".join(audio_stream)
+
+#         print(f"✅ TTS Success ({len(audio_data)} bytes)")
+
+#         return audio_data
+
+#     except Exception:
+#         print("========== TTS ERROR ==========")
+#         traceback.print_exc()
+#         raise
+
+
+# async def _text_to_speech(text: str) -> bytes:
+#     return await asyncio.to_thread(_text_to_speech_sync, text)
+
+
+# =========================
+# STT
+# =========================
 def _speech_to_text(audio_bytes: bytes) -> str:
     whisper = get_whisper()
-    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as f:
+
+    with tempfile.NamedTemporaryFile(
+        suffix=".webm",
+        delete=False
+    ) as f:
         f.write(audio_bytes)
         tmp_path = f.name
-    try:
-        segments, _ = whisper.transcribe(tmp_path, language="ar")
-        return " ".join(seg.text for seg in segments).strip()
-    finally:
-        os.unlink(tmp_path)
 
+    try:
+        print("Starting transcription...")
+        print("Before transcribe")
+
+        segments, info = whisper.transcribe(
+            tmp_path,
+            language="ar",
+            beam_size=1
+        )
+
+        print("After transcribe")
+
+        texts = []
+
+        for segment in segments:
+            print("Segment:", segment.text)
+            texts.append(segment.text)
+
+        text = " ".join(texts).strip()
+
+        print("Transcript:", text)
+
+        return text
+
+    except Exception:
+        print("========== STT ERROR ==========")
+        traceback.print_exc()
+        raise
+
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+# =========================
+# RAG / LLM
+# =========================
+
+async def get_answer(question: str) -> str:
+    print("Question:", question)
+
+    answer = await asyncio.to_thread(
+        rag.answer_question,
+        question
+    )
+
+    print("Answer:", answer)
+
+    return answer
+# =========================
+# Models
+# =========================
+
+class TTSRequest(BaseModel):
+    text: str
+
+
+# =========================
+# Health
+# =========================
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
     return HealthResponse(status="ok")
 
 
+# =========================
+# Chat
+# =========================
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     if not request.message.strip():
-        raise HTTPException(status_code=400, detail="Message cannot be empty")
+        raise HTTPException(
+            status_code=400,
+            detail="Message cannot be empty"
+        )
+
     try:
-        answer = await asyncio.to_thread(rag.answer_question, request.message)
+        answer = await get_answer(request.message)
+
         return ChatResponse(answer=answer)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
+    except Exception:
+        traceback.print_exc()
+
+        raise HTTPException(
+            status_code=500,
+            detail="Chat failed"
+        )
 
 
-@router.post("/voice")
-async def voice(audio: UploadFile = File(...)):
-    """One-shot voice: STT → RAG → TTS → return audio."""
+# =========================
+# TTS Endpoint
+# =========================
+
+@router.post("/tts")
+async def tts_endpoint(request: TTSRequest):
     try:
-        audio_bytes = await audio.read()
-
-        # STT
-        question = await asyncio.to_thread(_speech_to_text, audio_bytes)
-        if not question:
-            raise HTTPException(status_code=400, detail="Could not transcribe audio")
-
-        # RAG
-        answer_text = await asyncio.to_thread(rag.answer_question, question)
-
-        # TTS
-        audio_data = await _text_to_speech(answer_text)
+        audio_data = await _text_to_speech(request.text)
 
         return StreamingResponse(
             io.BytesIO(audio_data),
-            media_type="audio/mpeg",
-            headers={"X-Answer-Text": answer_text[:500]},
+            media_type="audio/mpeg"
         )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
+    except Exception:
+        traceback.print_exc()
+
+        raise HTTPException(
+            status_code=500,
+            detail="TTS Failed"
+        )
 
 
-@router.websocket("/call")
-async def realtime_call(websocket: WebSocket):
-    """Real-time call: WebSocket-based STT → RAG → TTS loop."""
-    await websocket.accept()
-    audio_buffer: list[bytes] = []
+# =========================
+# Voice Endpoint
+# =========================
 
+# @router.post("/voice")
+# async def voice(audio: UploadFile = File(...)):
+#     try:
+#         print("Voice request received")
+
+#         audio_bytes = await audio.read()
+
+#         question = await asyncio.to_thread(
+#             _speech_to_text,
+#             audio_bytes
+#         )
+
+#         if not question:
+#             raise HTTPException(
+#                 status_code=400,
+#                 detail="Could not transcribe audio"
+#             )
+
+#         answer_text = await asyncio.to_thread(
+#             rag.answer_question,
+#             question
+#         )
+
+#         audio_data = await _text_to_speech(
+#             answer_text
+#         )
+
+#         return StreamingResponse(
+#             io.BytesIO(audio_data),
+#             media_type="audio/mpeg",
+#             headers={
+#                 "X-Answer-Text": answer_text[:500]
+#             }
+#         )
+
+#     except HTTPException:
+#         raise
+
+#     except Exception:
+#         traceback.print_exc()
+
+#         raise HTTPException(
+#             status_code=500,
+#             detail="Voice Failed"
+#         )
+@router.post("/voice")
+async def voice(audio: UploadFile = File(...)):
     try:
-        while True:
-            raw = await websocket.receive_text()
-            msg = json.loads(raw)
+        audio_bytes = await audio.read()
 
-            if msg["type"] == "ping":
-                await websocket.send_text(json.dumps({"type": "pong"}))
+        question = await asyncio.to_thread(
+            _speech_to_text,
+            audio_bytes
+        )
 
-            elif msg["type"] == "audio_chunk":
-                audio_buffer.append(base64.b64decode(msg["data"]))
+        if not question:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not transcribe audio"
+            )
 
-            elif msg["type"] == "end_of_speech":
-                if not audio_buffer:
-                    await websocket.send_text(json.dumps({"type": "error", "message": "No audio"}))
-                    continue
+        answer_text = await get_answer(question)
 
-                combined = b"".join(audio_buffer)
-                audio_buffer.clear()
+        return {
+            "transcript": question,
+            "answer": answer_text
+        }
 
-                # STT
-                question = await asyncio.to_thread(_speech_to_text, combined)
-                if not question:
-                    await websocket.send_text(json.dumps({"type": "error", "message": "لم أفهم الصوت"}))
-                    continue
-
-                await websocket.send_text(json.dumps({"type": "transcript", "text": question}))
-
-                # RAG
-                answer_text = await asyncio.to_thread(rag.answer_question, question)
-                await websocket.send_text(json.dumps({"type": "answer_done", "text": answer_text}))
-
-                # TTS
-                audio_data = await _text_to_speech(answer_text)
-                chunk_size = 8192
-                for i in range(0, len(audio_data), chunk_size):
-                    chunk = audio_data[i:i + chunk_size]
-                    await websocket.send_text(json.dumps({
-                        "type": "audio_chunk",
-                        "data": base64.b64encode(chunk).decode(),
-                    }))
-                await websocket.send_text(json.dumps({"type": "audio_done"}))
-
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        try:
-            await websocket.send_text(json.dumps({"type": "error", "message": str(e)}))
-        except Exception:
-            pass
+    except Exception:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail="Voice Failed"
+        )
