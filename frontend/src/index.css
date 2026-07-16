@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Arabic font stack */
+body {
+  font-family: 'Cairo', 'Noto Naskh Arabic', sans-serif;
+  direction: rtl;
+}
+
+/* Custom scrollbar for chat window */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #bfa082;
+  border-radius: 2px;
+}
+
+/* Smooth scroll */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Textarea auto-grow */
+textarea {
+  field-sizing: content;
+}
+
+@layer utilities {
+  .font-arabic {
+    font-family: 'Cairo', 'Noto Naskh Arabic', sans-serif;
+  }
+}
