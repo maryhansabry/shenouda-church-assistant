@@ -2,10 +2,10 @@
 
 **An AI assistant (RAG) for Anba Shenouda Church** — answers visitor questions about the church's history and priests based strictly on documented sources, via text or voice, with real-time voice call support.
 
-![Python](<img width="1920" height="930" alt="image" src="https://github.com/user-attachments/assets/074d476c-e89f-4c34-a9f5-bfa38499b3c0" />
+(<img width="1920" height="930" alt="image" src="https://github.com/user-attachments/assets/074d476c-e89f-4c34-a9f5-bfa38499b3c0" />
 )
-![FastAPI](<img width="1920" height="917" alt="image" src="https://github.com/user-attachments/assets/c89d2f59-3b5f-4ea1-8efb-5daa19b0361c" />
-)
+(<img width="1920" height="917" alt="image" src="https://github.com/user-attachments/assets/c89d2f59-3b5f-4ea1-8efb-5daa19b0361c" />
+https://shenouda-church-assistant.vercel.app/
 
 ---
 
